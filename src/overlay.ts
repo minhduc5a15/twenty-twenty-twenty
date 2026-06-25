@@ -3,7 +3,11 @@ import { listen } from "@tauri-apps/api/event";
 
 // ─── Constants ──────────────────────────────────────────────
 
-const BREAK_DURATION = 20; // seconds
+interface AppSettings {
+  strict_mode: boolean;
+  work_duration_secs: number;
+  break_duration_secs: number;
+}
 const CIRCUMFERENCE = 2 * Math.PI * 70; // matches SVG circle r=70
 
 // ─── DOM Elements ───────────────────────────────────────────
@@ -14,37 +18,36 @@ const $breakSeconds = document.getElementById(
 const $breakProgress = document.getElementById(
   "break-progress",
 ) as unknown as SVGCircleElement;
-const $addTimeBtn = document.getElementById(
-  "add-time-btn",
-) as HTMLButtonElement;
 const $closeBtn = document.getElementById("close-btn") as HTMLButtonElement;
+const $addTimeBtn = document.getElementById("add-time-btn") as HTMLButtonElement;
+const $subtitle = document.getElementById("overlay-subtitle") as HTMLParagraphElement;
 
 // ─── Block all keyboard shortcuts ───────────────────────────
 
-let isStrictMode = true;
+const preventKeyboard = (e: KeyboardEvent) => {
+  e.preventDefault();
+  e.stopPropagation();
+  return false;
+};
 
-document.addEventListener(
-  "keydown",
-  (e: KeyboardEvent) => {
-    if (isStrictMode) {
-      e.preventDefault();
-      e.stopPropagation();
-      return false;
-    }
-  },
-  true,
-);
+const preventContext = (e: MouseEvent) => {
+  e.preventDefault();
+};
 
-document.addEventListener("contextmenu", (e) => {
-  if (isStrictMode) {
-    e.preventDefault();
+function toggleStrictListeners(strict: boolean) {
+  if (strict) {
+    document.addEventListener("keydown", preventKeyboard, true);
+    document.addEventListener("contextmenu", preventContext);
+  } else {
+    document.removeEventListener("keydown", preventKeyboard, true);
+    document.removeEventListener("contextmenu", preventContext);
   }
-});
+}
 
 // ─── Countdown Logic ────────────────────────────────────────
 
-let remaining = BREAK_DURATION;
-let totalDuration = BREAK_DURATION;
+let remaining = 20;
+let totalDuration = 20;
 
 function updateBreakUI() {
   $breakSeconds.textContent = String(remaining);
@@ -100,18 +103,24 @@ $addTimeBtn.addEventListener("click", async () => {
 // Fetch settings to determine when to show the close button
 async function initOverlay() {
   try {
-    isStrictMode = await invoke<boolean>("get_strict_mode");
-    if (!isStrictMode) {
+    const settings = await invoke<AppSettings>("get_settings");
+    toggleStrictListeners(settings.strict_mode);
+    remaining = settings.break_duration_secs;
+    totalDuration = settings.break_duration_secs;
+    $subtitle.textContent = `Look at something 20 feet (6 meters) away for ${settings.break_duration_secs} seconds`;
+    updateBreakUI();
+
+    if (!settings.strict_mode) {
       $closeBtn.style.display = "inline-block";
       $closeBtn.classList.add("fade-in");
     } else {
       setTimeout(() => {
         $closeBtn.style.display = "inline-block";
         $closeBtn.classList.add("fade-in");
-      }, 20000);
+      }, settings.break_duration_secs * 1000);
     }
   } catch (err) {
-    console.error("Failed to init strict mode:", err);
+    console.error("Failed to init overlay settings:", err);
   }
 }
 initOverlay();

@@ -7,14 +7,11 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
     WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_notification::NotificationExt;
-
-/// Work interval in seconds (20 minutes for production).
-const WORK_INTERVAL_SECS: u64 = 20 * 60;
 
 /// Application timer state shared across commands.
 struct TimerState {
@@ -26,15 +23,17 @@ struct TimerState {
     remaining_secs: u64,
     /// Instant when the timer last ticked (used for accurate delta calculation).
     last_tick: Instant,
+    total_work_secs: u64,
 }
 
-impl Default for TimerState {
-    fn default() -> Self {
+impl TimerState {
+    fn new(total_work_secs: u64) -> Self {
         Self {
             running: true,
             paused: false,
-            remaining_secs: WORK_INTERVAL_SECS,
+            remaining_secs: total_work_secs,
             last_tick: Instant::now(),
+            total_work_secs,
         }
     }
 }
@@ -48,8 +47,9 @@ impl TimerState {
         self.paused
     }
 
-    fn reset(&mut self) {
-        self.remaining_secs = WORK_INTERVAL_SECS;
+    fn reset(&mut self, total_work_secs: u64) {
+        self.total_work_secs = total_work_secs;
+        self.remaining_secs = total_work_secs;
         self.paused = false;
         self.running = true;
         self.last_tick = Instant::now();
@@ -66,11 +66,17 @@ struct BreakState(Arc<AtomicU64>);
 #[derive(Serialize, Deserialize, Clone)]
 struct AppSettings {
     strict_mode: bool,
+    work_duration_secs: u64,
+    break_duration_secs: u64,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
-        Self { strict_mode: true }
+        Self {
+            strict_mode: true,
+            work_duration_secs: 1200,
+            break_duration_secs: 20,
+        }
     }
 }
 
@@ -79,7 +85,11 @@ struct SettingsState(Mutex<AppSettings>);
 fn settings_path(app: &AppHandle) -> std::path::PathBuf {
     app.path()
         .app_data_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .unwrap_or_else(|_| {
+            std::env::var("HOME")
+                .map(|h| std::path::PathBuf::from(h).join(".twenty-twenty-twenty"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
         .join("settings.json")
 }
 
@@ -127,18 +137,23 @@ fn toggle_pause(state: tauri::State<'_, Mutex<TimerState>>) -> bool {
 
 /// Reset the timer back to the work interval and unpause.
 #[tauri::command]
-fn reset_timer(state: tauri::State<'_, Mutex<TimerState>>) {
-    state.lock().unwrap().reset();
+fn reset_timer(
+    state: tauri::State<'_, Mutex<TimerState>>,
+    settings_state: tauri::State<'_, SettingsState>,
+) {
+    let settings = settings_state.0.lock().unwrap().clone();
+    state.lock().unwrap().reset(settings.work_duration_secs);
 }
 
 /// Send the system notification for the break.
 #[tauri::command]
 fn send_break_notification(app: AppHandle) {
+    let break_secs = app.state::<SettingsState>().0.lock().unwrap().break_duration_secs;
     let _ = app
         .notification()
         .builder()
         .title("Time for a Break!")
-        .body("Look at something 20 feet (6 meters) away for 20 seconds.")
+        .body(format!("Look at something 20 feet (6 meters) away for {} seconds.", break_secs))
         .show();
 }
 
@@ -180,27 +195,45 @@ fn add_break_time(state: tauri::State<'_, BreakState>) {
 }
 
 #[tauri::command]
-fn get_strict_mode(state: tauri::State<'_, SettingsState>) -> bool {
-    state.0.lock().unwrap().strict_mode
+fn get_settings(state: tauri::State<'_, SettingsState>) -> AppSettings {
+    state.0.lock().unwrap().clone()
 }
 
 #[tauri::command]
-fn set_strict_mode(app: AppHandle, state: tauri::State<'_, SettingsState>, strict_mode: bool) {
-    let mut s = state.0.lock().unwrap();
-    s.strict_mode = strict_mode;
-    save_settings(&app, &s);
-    let _ = app.emit("settings-changed", strict_mode);
+fn update_settings(
+    app: AppHandle,
+    state: tauri::State<'_, SettingsState>,
+    timer_state: tauri::State<'_, Mutex<TimerState>>,
+    settings: AppSettings,
+) {
+    let mut should_reset = false;
+    {
+        let mut s = state.0.lock().unwrap();
+        if s.work_duration_secs != settings.work_duration_secs {
+            should_reset = true;
+        }
+        *s = settings.clone();
+        save_settings(&app, &s);
+    }
+    
+    if should_reset {
+        timer_state.lock().unwrap().reset(settings.work_duration_secs);
+    }
+    
+    let _ = app.emit("settings-changed", settings.clone());
+    
+    if should_reset {
+        let _ = app.emit("timer-tick", ());
+    }
+}
+
+#[tauri::command]
+fn quit_app(_app: AppHandle) {
+    std::process::exit(0);
 }
 
 /// Force a window to cover the entire primary monitor.
-fn force_fullscreen(app: &AppHandle, win: &tauri::WebviewWindow) {
-    // Get monitor dimensions and size the window to fill the screen
-    if let Ok(Some(monitor)) = app.primary_monitor() {
-        let size = monitor.size();
-        let pos = monitor.position();
-        let _ = win.set_position(PhysicalPosition::new(pos.x, pos.y));
-        let _ = win.set_size(PhysicalSize::new(size.width, size.height));
-    }
+fn force_fullscreen(_app: &AppHandle, win: &tauri::WebviewWindow) {
     let _ = win.set_fullscreen(true);
     let _ = win.set_always_on_top(true);
     let _ = win.set_focus();
@@ -280,8 +313,13 @@ fn start_background_timer(app: &AppHandle) {
                 }
 
                 let now = Instant::now();
-                let elapsed = now.duration_since(s.last_tick).as_secs();
+                let mut elapsed = now.duration_since(s.last_tick).as_secs();
                 s.last_tick = now;
+
+                // Handle system sleep: if elapsed time is huge, cap it to 1 second
+                if elapsed > 10 {
+                    elapsed = 1;
+                }
 
                 if elapsed >= s.remaining_secs {
                     s.remaining_secs = 0;
@@ -296,12 +334,15 @@ fn start_background_timer(app: &AppHandle) {
             let _ = handle.emit("timer-tick", ());
 
             if should_break {
+                // Get break duration
+                let break_secs = handle.state::<SettingsState>().0.lock().unwrap().break_duration_secs;
+                
                 // Fire notification
                 let _ = handle
                     .notification()
                     .builder()
                     .title("Time for a Break!")
-                    .body("Look at something 20 feet (6 meters) away for 20 seconds.")
+                    .body(format!("Look at something 20 feet (6 meters) away for {} seconds.", break_secs))
                     .show();
 
                 // Tell the frontend the break has started
@@ -325,7 +366,8 @@ fn start_background_timer(app: &AppHandle) {
                 // Reset the break timer to 20 seconds initially
                 {
                     let b = handle.state::<BreakState>();
-                    b.0.store(20, Ordering::SeqCst);
+                    let break_duration = handle.state::<SettingsState>().0.lock().unwrap().break_duration_secs;
+                    b.0.store(break_duration, Ordering::SeqCst);
                 }
 
                 // Wait for the window to actually open and frontend to load
@@ -400,7 +442,8 @@ fn start_background_timer(app: &AppHandle) {
                 let _ = handle.emit("break-end", ());
 
                 // Reset the work timer (the MutexGuard is dropped immediately after this line)
-                handle.state::<Mutex<TimerState>>().lock().unwrap().reset();
+                let total = handle.state::<SettingsState>().0.lock().unwrap().work_duration_secs;
+                handle.state::<Mutex<TimerState>>().lock().unwrap().reset(total);
             }
         }
     });
@@ -421,7 +464,7 @@ fn show_main_window(app_handle: &AppHandle) {
             tauri::WebviewUrl::App("index.html".into()),
         )
         .title("20-20-20 Eye Rest")
-        .inner_size(420.0, 560.0)
+        .inner_size(420.0, 600.0)
         .resizable(true)
         .center()
         .build();
@@ -483,10 +526,13 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             }
             "strict_mode" => {
                 let state = app_handle.state::<SettingsState>();
-                let mut settings = state.0.lock().unwrap();
+                let mut settings = state.0.lock().unwrap().clone();
                 settings.strict_mode = !settings.strict_mode;
+                {
+                    *state.0.lock().unwrap() = settings.clone();
+                }
                 save_settings(app_handle, &settings);
-                let _ = app_handle.emit("settings-changed", settings.strict_mode);
+                let _ = app_handle.emit("settings-changed", settings);
             }
             "pause" => {
                 app_handle
@@ -497,15 +543,16 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                 let _ = app_handle.emit("timer-tick", ());
             }
             "reset" => {
+                let total = app_handle.state::<SettingsState>().0.lock().unwrap().work_duration_secs;
                 app_handle
                     .state::<Mutex<TimerState>>()
                     .lock()
                     .unwrap()
-                    .reset();
+                    .reset(total);
                 let _ = app_handle.emit("timer-tick", ());
             }
             "quit" => {
-                app_handle.exit(0);
+                std::process::exit(0);
             }
             _ => {}
         })
@@ -527,7 +574,6 @@ pub fn run() {
             Some(vec![]),
         ))
         .plugin(tauri_plugin_notification::init())
-        .manage(Mutex::new(TimerState::default()))
         .manage(OverlayCloseAllowed(Arc::new(AtomicBool::new(true))))
         .manage(BreakState(Arc::new(AtomicU64::new(0))))
         .invoke_handler(tauri::generate_handler![
@@ -539,13 +585,16 @@ pub fn run() {
             open_overlay,
             close_overlay,
             add_break_time,
-            get_strict_mode,
-            set_strict_mode,
+            get_settings,
+            update_settings,
+            quit_app,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
             let settings = load_settings(&handle);
+            let total_work = settings.work_duration_secs;
             app.manage(SettingsState(Mutex::new(settings)));
+            app.manage(Mutex::new(TimerState::new(total_work)));
 
             setup_tray(&handle)?;
             start_background_timer(&handle);

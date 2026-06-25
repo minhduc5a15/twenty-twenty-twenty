@@ -3,23 +3,39 @@ import { listen } from "@tauri-apps/api/event";
 
 // ─── Constants ──────────────────────────────────────────────
 
-const TOTAL_WORK_SECS = 20 * 60; // 20 minutes
+let TOTAL_WORK_SECS = 1200;
+
+interface AppSettings {
+  strict_mode: boolean;
+  work_duration_secs: number;
+  break_duration_secs: number;
+}
 const CIRCUMFERENCE = 2 * Math.PI * 88; // matches SVG circle r=88
 
 // ─── DOM Elements ───────────────────────────────────────────
 
 const $minutes = document.getElementById("timer-minutes") as HTMLSpanElement;
 const $seconds = document.getElementById("timer-seconds") as HTMLSpanElement;
-const $progress = document.getElementById("timer-progress") as unknown as SVGCircleElement;
+const $timerSeconds = document.getElementById("timer-seconds") as HTMLSpanElement;
 const $statusBadge = document.getElementById("status-badge") as HTMLDivElement;
 const $statusText = document.getElementById("status-text") as HTMLSpanElement;
 const $btnPause = document.getElementById("btn-pause") as HTMLButtonElement;
+const $mainTitle = document.getElementById("main-title") as HTMLHeadingElement;
+const $btnOpenSettings = document.getElementById("btn-open-settings") as HTMLButtonElement;
+const $btnCloseSettings = document.getElementById("btn-close-settings") as HTMLButtonElement;
+const $settingsModal = document.getElementById("settings-modal") as HTMLDivElement;
+const $btnSaveSettings = document.getElementById("btn-save-settings") as HTMLButtonElement;
+const $btnQuitApp = document.getElementById("btn-quit-app") as HTMLButtonElement;
+const $progress = document.getElementById("timer-progress") as unknown as SVGCircleElement;
+const $strictBadge = document.getElementById("strict-badge") as HTMLDivElement;
+const $strictIndicator = document.getElementById("strict-indicator") as HTMLSpanElement;
 const $btnPauseText = document.getElementById("btn-pause-text") as HTMLSpanElement;
 const $iconPause = document.getElementById("icon-pause") as unknown as SVGElement;
 const $iconPlay = document.getElementById("icon-play") as unknown as SVGElement;
 const $btnReset = document.getElementById("btn-reset") as HTMLButtonElement;
 const $infoCountdown = document.getElementById("info-countdown") as HTMLElement;
-const $toggleStrictMode = document.getElementById("toggle-strict-mode") as HTMLInputElement;
+const $inputWork = document.getElementById("input-work-duration") as HTMLInputElement;
+const $inputBreak = document.getElementById("input-break-duration") as HTMLInputElement;
 
 // ─── Rendering ──────────────────────────────────────────────
 
@@ -118,34 +134,100 @@ async function init() {
   });
 
   // Settings
-  const isStrict = await invoke<boolean>("get_strict_mode");
-  $toggleStrictMode.checked = isStrict;
+  let currentSettings = await invoke<AppSettings>("get_settings");
+  TOTAL_WORK_SECS = currentSettings.work_duration_secs;
   
-  $toggleStrictMode.addEventListener("change", async (e) => {
-    const target = e.target as HTMLInputElement;
+  $inputWork.value = String(currentSettings.work_duration_secs / 60);
+  $inputBreak.value = String(currentSettings.break_duration_secs);
+  $mainTitle.textContent = `${currentSettings.work_duration_secs / 60}-20-${currentSettings.break_duration_secs}`;
+  
+  const updateStrictIndicator = (isStrict: boolean) => {
+    if (isStrict) {
+      $strictBadge.classList.remove("status-strict-off");
+      $strictBadge.classList.add("status-strict-on");
+      $strictIndicator.textContent = "Strict: ON";
+    } else {
+      $strictBadge.classList.remove("status-strict-on");
+      $strictBadge.classList.add("status-strict-off");
+      $strictIndicator.textContent = "Strict: OFF";
+    }
+  };
+  
+  updateStrictIndicator(currentSettings.strict_mode);
+  
+  const handleSettingsUpdate = async () => {
+    let workSecs = parseInt($inputWork.value) * 60;
+    if (isNaN(workSecs) || workSecs < 60) workSecs = 60; // min 1 min
+    
+    let breakSecs = parseInt($inputBreak.value);
+    if (isNaN(breakSecs) || breakSecs < 5) breakSecs = 5; // min 5 sec
+    
+    const newSettings: AppSettings = {
+      strict_mode: currentSettings.strict_mode,
+      work_duration_secs: workSecs,
+      break_duration_secs: breakSecs,
+    };
+    
+    currentSettings = newSettings;
+    $mainTitle.textContent = `${workSecs / 60}-20-${breakSecs}`;
+    updateStrictIndicator(currentSettings.strict_mode);
+    
     try {
-      await invoke("set_strict_mode", { strictMode: target.checked });
+      await invoke("update_settings", { settings: newSettings });
     } catch (err) {
-      console.error("Failed to set strict mode:", err);
+      console.error("Failed to update settings:", err);
+    }
+  };
+
+  $btnSaveSettings.addEventListener("click", () => {
+    handleSettingsUpdate();
+    $settingsModal.classList.add("hidden");
+  });
+  
+  $btnQuitApp.addEventListener("click", () => {
+    invoke("quit_app").catch(console.error);
+  });
+  
+  let strictDebounceTimer: number | null = null;
+  $strictBadge.addEventListener("click", () => {
+    currentSettings.strict_mode = !currentSettings.strict_mode;
+    updateStrictIndicator(currentSettings.strict_mode);
+    
+    if (strictDebounceTimer) {
+      window.clearTimeout(strictDebounceTimer);
+    }
+    
+    strictDebounceTimer = window.setTimeout(() => {
+      invoke("update_settings", { settings: currentSettings }).catch((err) => {
+        console.error("Failed to update strict mode:", err);
+      });
+    }, 500);
+  });
+
+  // Modal logic
+  $btnOpenSettings.addEventListener("click", () => {
+    $settingsModal.classList.remove("hidden");
+  });
+
+  $btnCloseSettings.addEventListener("click", () => {
+    $settingsModal.classList.add("hidden");
+  });
+
+  $settingsModal.addEventListener("click", (e) => {
+    if (e.target === $settingsModal) {
+      $settingsModal.classList.add("hidden");
     }
   });
 
-  await listen<boolean>("settings-changed", (event) => {
-    $toggleStrictMode.checked = event.payload;
+  await listen<AppSettings>("settings-changed", (event) => {
+    const s = event.payload;
+    currentSettings = s;
+    TOTAL_WORK_SECS = s.work_duration_secs;
+    $inputWork.value = String(s.work_duration_secs / 60);
+    $inputBreak.value = String(s.break_duration_secs);
+    $mainTitle.textContent = `${s.work_duration_secs / 60}-20-${s.break_duration_secs}`;
+    updateStrictIndicator(s.strict_mode);
   });
-
-  // Also poll every second for UI smoothness
-  // (covers cases where events might be missed during window focus changes)
-  setInterval(async () => {
-    try {
-      const rem = await invoke<number>("get_remaining");
-      const p = await invoke<boolean>("is_paused");
-      updateUI(rem);
-      setStatusUI(p);
-    } catch {
-      // Ignore errors during window transitions
-    }
-  }, 1000);
 }
 
 init();
