@@ -13,8 +13,8 @@ use tauri::{
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_notification::NotificationExt;
 
-/// Work interval in seconds (20 minutes for production).
-const WORK_INTERVAL_SECS: u64 = 20 * 60;
+/// Work interval in seconds (10 seconds for testing).
+const WORK_INTERVAL_SECS: u64 = 10;
 
 /// Application timer state shared across commands.
 struct TimerState {

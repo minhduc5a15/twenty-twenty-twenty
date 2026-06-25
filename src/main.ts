@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 // ─── Constants ──────────────────────────────────────────────
 
-const TOTAL_WORK_SECS = 20 * 60; // 20 minutes
+const TOTAL_WORK_SECS = 10; // 10 seconds (testing)
 const CIRCUMFERENCE = 2 * Math.PI * 88; // matches SVG circle r=88
 
 // ─── DOM Elements ───────────────────────────────────────────

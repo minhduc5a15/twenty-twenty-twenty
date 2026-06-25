@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "main"
+      - "test-10s"
     tags:
       - "v*"
   workflow_dispatch:
