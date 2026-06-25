@@ -463,7 +463,7 @@ fn show_main_window(app_handle: &AppHandle) {
             "main",
             tauri::WebviewUrl::App("index.html".into()),
         )
-        .title("20-20-20 Eye Rest")
+        .title("Twenty Twenty Twenty")
         .inner_size(420.0, 600.0)
         .resizable(true)
         .center()
@@ -509,7 +509,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let _tray = TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
-        .tooltip("20-20-20 Eye Rest")
+        .tooltip("Twenty Twenty Twenty")
         .on_menu_event(move |app_handle, event| match event.id().as_ref() {
             "show" => {
                 show_main_window(app_handle);

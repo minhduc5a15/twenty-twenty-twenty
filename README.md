@@ -1,4 +1,4 @@
-# 20-20-20 Eye Rest
+# Twenty Twenty Twenty
 
 A lightweight desktop application that reminds you to rest your eyes following the **20-20-20 rule**: every 20 minutes, look at something 20 feet (6 meters) away for 20 seconds.
 
