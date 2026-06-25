@@ -218,3 +218,90 @@ html, body {
   text-transform: uppercase;
   letter-spacing: 0.12em;
 }
+/* ─── Action Buttons ──────────────────────────────────────── */
+
+.overlay-actions {
+  display: flex;
+  gap: 16px;
+  margin-top: 24px;
+  position: relative;
+  z-index: 10;
+}
+
+.action-btn {
+  padding: 12px 28px;
+  border-radius: 24px;
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  backdrop-filter: blur(8px);
+  border: none;
+  outline: none;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, rgba(175, 66, 255, 0.15), rgba(108, 92, 231, 0.15));
+  border: 1px solid rgba(175, 66, 255, 0.4);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(175, 66, 255, 0.15);
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, rgba(175, 66, 255, 0.25), rgba(108, 92, 231, 0.25));
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(175, 66, 255, 0.25);
+  border-color: rgba(175, 66, 255, 0.6);
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateY(-2px);
+  color: #fff;
+}
+
+.action-btn:active {
+  transform: translateY(1px);
+}
+
+.fade-in {
+  animation: fadeIn 0.5s ease-out forwards;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Floating Text Animation ──────────────────────────────── */
+
+.float-text {
+  position: absolute;
+  color: var(--success);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 24px;
+  pointer-events: none;
+  z-index: 100;
+  animation: floatUp 1s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  text-shadow: 0 0 16px var(--success-glow);
+}
+
+@keyframes floatUp {
+  0% { 
+    opacity: 1; 
+    transform: translate(-50%, 0) scale(1); 
+  }
+  100% { 
+    opacity: 0; 
+    transform: translate(-50%, -60px) scale(1.4); 
+  }
+}
+

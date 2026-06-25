@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 // ─── Constants ──────────────────────────────────────────────
@@ -13,6 +14,10 @@ const $breakSeconds = document.getElementById(
 const $breakProgress = document.getElementById(
   "break-progress",
 ) as unknown as SVGCircleElement;
+const $addTimeBtn = document.getElementById(
+  "add-time-btn",
+) as HTMLButtonElement;
+const $closeBtn = document.getElementById("close-btn") as HTMLButtonElement;
 
 // ─── Block all keyboard shortcuts ───────────────────────────
 
@@ -33,11 +38,17 @@ document.addEventListener("contextmenu", (e) => {
 // ─── Countdown Logic ────────────────────────────────────────
 
 let remaining = BREAK_DURATION;
+let totalDuration = BREAK_DURATION;
 
 function updateBreakUI() {
   $breakSeconds.textContent = String(remaining);
 
-  const fraction = remaining / BREAK_DURATION;
+  // If time was added, update the denominator so the ring smoothly adjusts!
+  if (remaining > totalDuration) {
+    totalDuration = remaining;
+  }
+
+  const fraction = remaining / totalDuration;
   const offset = CIRCUMFERENCE * (1 - fraction);
   $breakProgress.style.strokeDasharray = `${CIRCUMFERENCE}`;
   $breakProgress.style.strokeDashoffset = `${offset}`;
@@ -54,4 +65,43 @@ updateBreakUI();
 listen<number>("break-tick", (event) => {
   remaining = event.payload;
   updateBreakUI();
+});
+
+// Add more time button
+$addTimeBtn.addEventListener("click", async () => {
+  try {
+    await invoke("add_break_time");
+
+    // Spawn floating text animation
+    const floater = document.createElement("div");
+    floater.textContent = "+20";
+    floater.className = "float-text";
+
+    const rect = $addTimeBtn.getBoundingClientRect();
+    const x = rect.left + rect.width / 2 + (Math.random() * 20 - 10);
+    const y = rect.top;
+
+    floater.style.left = `${x}px`;
+    floater.style.top = `${y}px`;
+    document.body.appendChild(floater);
+
+    setTimeout(() => floater.remove(), 1000);
+  } catch (err) {
+    console.error("Failed to add time:", err);
+  }
+});
+
+// Show the Close button after the original 20 seconds have elapsed
+setTimeout(() => {
+  $closeBtn.style.display = "inline-block";
+  $closeBtn.classList.add("fade-in");
+}, 20000);
+
+// Allow closing manually if the user clicked +20s by mistake
+$closeBtn.addEventListener("click", async () => {
+  try {
+    await invoke("close_overlay");
+  } catch (err) {
+    console.error("Failed to close overlay:", err);
+  }
 });

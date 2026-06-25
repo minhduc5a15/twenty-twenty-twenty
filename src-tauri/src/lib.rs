@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{
@@ -9,6 +9,8 @@ use tauri::{
     WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use rodio::{source::SineWave, source::Source, DeviceSinkBuilder};
 
 /// Work interval in seconds (20 minutes for production).
 const WORK_INTERVAL_SECS: u64 = 20 * 60;
@@ -36,9 +38,29 @@ impl Default for TimerState {
     }
 }
 
+impl TimerState {
+    fn toggle_pause(&mut self) -> bool {
+        self.paused = !self.paused;
+        if !self.paused {
+            self.last_tick = Instant::now();
+        }
+        self.paused
+    }
+
+    fn reset(&mut self) {
+        self.remaining_secs = WORK_INTERVAL_SECS;
+        self.paused = false;
+        self.running = true;
+        self.last_tick = Instant::now();
+    }
+}
+
 /// Shared flag: when false, the overlay window blocks all close attempts.
-/// Only set to true by the backend when the 20-second break is over.
+/// Only set to true by the backend when the break is over.
 struct OverlayCloseAllowed(Arc<AtomicBool>);
+
+/// Shared state for tracking remaining seconds in the active break.
+struct BreakState(Arc<AtomicU64>);
 
 // ─── Tauri Commands ─────────────────────────────────────────
 
@@ -59,22 +81,13 @@ fn is_paused(state: tauri::State<'_, Mutex<TimerState>>) -> bool {
 /// Toggle pause / resume. Returns the new paused state.
 #[tauri::command]
 fn toggle_pause(state: tauri::State<'_, Mutex<TimerState>>) -> bool {
-    let mut s = state.lock().unwrap();
-    s.paused = !s.paused;
-    if !s.paused {
-        s.last_tick = Instant::now();
-    }
-    s.paused
+    state.lock().unwrap().toggle_pause()
 }
 
 /// Reset the timer back to the work interval and unpause.
 #[tauri::command]
 fn reset_timer(state: tauri::State<'_, Mutex<TimerState>>) {
-    let mut s = state.lock().unwrap();
-    s.remaining_secs = WORK_INTERVAL_SECS;
-    s.paused = false;
-    s.running = true;
-    s.last_tick = Instant::now();
+    state.lock().unwrap().reset();
 }
 
 /// Send the system notification for the break.
@@ -100,16 +113,33 @@ fn open_overlay(app: AppHandle) {
     build_overlay_window(&app);
 }
 
-/// Close the overlay window (only called by the backend timer).
+/// Close the overlay window (only called by the backend timer or frontend manual close).
 #[tauri::command]
 fn close_overlay(app: AppHandle) {
-    // Allow close, then destroy
+    // Allow close
     let flag = app.state::<OverlayCloseAllowed>();
     flag.0.store(true, Ordering::SeqCst);
+
+    // Immediately stop the background break countdown
+    let b = app.state::<BreakState>();
+    b.0.store(0, Ordering::SeqCst);
 
     if let Some(win) = app.get_webview_window("overlay") {
         let _ = win.close();
     }
+
+    // Bring main window to the front
+    if let Some(main_win) = app.get_webview_window("main") {
+        let _ = main_win.show();
+        let _ = main_win.unminimize();
+        let _ = main_win.set_focus();
+    }
+}
+
+/// Add 20 seconds to the currently running break.
+#[tauri::command]
+fn add_break_time(state: tauri::State<'_, BreakState>) {
+    state.0.fetch_add(20, Ordering::SeqCst);
 }
 
 /// Force a window to cover the entire primary monitor.
@@ -172,13 +202,11 @@ fn build_overlay_window(app: &AppHandle) {
                         api.prevent_close();
                     }
                 }
-                WindowEvent::Focused(focused) => {
-                    if !*focused && !flag.load(Ordering::SeqCst) {
-                        // User tried to switch windows or pressed Super key.
-                        // Force focus back to the overlay!
-                        let _ = win_clone.set_focus();
-                        let _ = win_clone.set_always_on_top(true);
-                    }
+                WindowEvent::Focused(focused) if !*focused && !flag.load(Ordering::SeqCst) => {
+                    // User tried to switch windows or pressed Super key.
+                    // Force focus back to the overlay!
+                    let _ = win_clone.set_focus();
+                    let _ = win_clone.set_always_on_top(true);
                 }
                 _ => {}
             }
@@ -245,15 +273,59 @@ fn start_background_timer(app: &AppHandle) {
                     }
                 });
 
-                // Give the Webview about 1.5 seconds to fully load and render.
-                // The frontend hardcodes `remaining = 20` initially, so it displays 20.
+                // Reset the break timer to 20 seconds initially
+                {
+                    let b = handle.state::<BreakState>();
+                    b.0.store(20, Ordering::SeqCst);
+                }
+
+                // Wait for the window to actually open and frontend to load
                 std::thread::sleep(Duration::from_millis(1500));
 
-                // Wait 19 seconds for the break, emitting ticks to the frontend
-                for rem in (1..=19).rev() {
+                // Open the audio device once per break to prevent ALSA locking issues on Linux
+                let mut audio_sink = DeviceSinkBuilder::open_default_sink().ok();
+                if let Some(ref mut sink) = audio_sink {
+                    sink.log_on_drop(false);
+                }
+
+                // Wait for the break to finish, emitting ticks to the frontend.
+                // We use BreakState so that the frontend can dynamically add time.
+                loop {
+                    let b = handle.state::<BreakState>();
+                    
+                    let mut current = b.0.load(Ordering::SeqCst);
+                    let rem = loop {
+                        if current == 0 {
+                            break 0;
+                        }
+                        match b.0.compare_exchange_weak(current, current - 1, Ordering::SeqCst, Ordering::Relaxed) {
+                            Ok(_) => break current - 1,
+                            Err(x) => current = x,
+                        }
+                    };
+
+                    if current == 0 {
+                        break;
+                    }
+                    
                     let _ = handle.emit("break-tick", rem);
+
+                    // Play tick sound when 5s or less remain
+                    if rem <= 5 && rem > 0 {
+                        if let Some(ref sink) = audio_sink {
+                            let source = SineWave::new(1200.0)
+                                .take_duration(Duration::from_millis(30))
+                                .amplify(0.15);
+                            sink.mixer().add(source);
+                        }
+                    }
+                    
                     std::thread::sleep(Duration::from_secs(1));
                 }
+
+                // Explicitly drop the audio sink to free the device for other apps
+                drop(audio_sink);
+
                 let _ = handle.emit("break-tick", 0);
                 std::thread::sleep(Duration::from_millis(500)); // Brief pause at 0
 
@@ -277,15 +349,8 @@ fn start_background_timer(app: &AppHandle) {
 
                 let _ = handle.emit("break-end", ());
 
-                // Reset the work timer
-                {
-                    let state = handle.state::<Mutex<TimerState>>();
-                    let mut s = state.lock().unwrap();
-                    s.remaining_secs = WORK_INTERVAL_SECS;
-                    s.last_tick = Instant::now();
-                    s.running = true;
-                    s.paused = false;
-                }
+                // Reset the work timer (the MutexGuard is dropped immediately after this line)
+                handle.state::<Mutex<TimerState>>().lock().unwrap().reset();
             }
         }
     });
@@ -294,13 +359,21 @@ fn start_background_timer(app: &AppHandle) {
 // ─── Tray Icon ──────────────────────────────────────────────
 
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::menu::CheckMenuItemBuilder;
+    
     let show_item = MenuItemBuilder::with_id("show", "Show Window").build(app)?;
+    
+    let is_autostart = app.autolaunch().is_enabled().unwrap_or(false);
+    let autostart_item = CheckMenuItemBuilder::with_id("autostart", "Start on Boot")
+        .checked(is_autostart)
+        .build(app)?;
+        
     let pause_item = MenuItemBuilder::with_id("pause", "Pause").build(app)?;
     let reset_item = MenuItemBuilder::with_id("reset", "Reset Timer").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
     let menu = MenuBuilder::new(app)
-        .items(&[&show_item, &pause_item, &reset_item, &quit_item])
+        .items(&[&show_item, &autostart_item, &pause_item, &reset_item, &quit_item])
         .build()?;
 
     let icon = Image::from_path("icons/32x32.png")
@@ -318,22 +391,22 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     let _ = win.unminimize();
                 }
             }
-            "pause" => {
-                let state = app_handle.state::<Mutex<TimerState>>();
-                let mut s = state.lock().unwrap();
-                s.paused = !s.paused;
-                if !s.paused {
-                    s.last_tick = Instant::now();
+            "autostart" => {
+                let autolaunch = app_handle.autolaunch();
+                if let Ok(enabled) = autolaunch.is_enabled() {
+                    if enabled {
+                        let _ = autolaunch.disable();
+                    } else {
+                        let _ = autolaunch.enable();
+                    }
                 }
+            }
+            "pause" => {
+                app_handle.state::<Mutex<TimerState>>().lock().unwrap().toggle_pause();
                 let _ = app_handle.emit("timer-tick", ());
             }
             "reset" => {
-                let state = app_handle.state::<Mutex<TimerState>>();
-                let mut s = state.lock().unwrap();
-                s.remaining_secs = WORK_INTERVAL_SECS;
-                s.paused = false;
-                s.running = true;
-                s.last_tick = Instant::now();
+                app_handle.state::<Mutex<TimerState>>().lock().unwrap().reset();
                 let _ = app_handle.emit("timer-tick", ());
             }
             "quit" => {
@@ -351,9 +424,11 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![])))
         .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(TimerState::default()))
         .manage(OverlayCloseAllowed(Arc::new(AtomicBool::new(true))))
+        .manage(BreakState(Arc::new(AtomicU64::new(0))))
         .invoke_handler(tauri::generate_handler![
             get_remaining,
             is_paused,
@@ -362,6 +437,7 @@ pub fn run() {
             send_break_notification,
             open_overlay,
             close_overlay,
+            add_break_time,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
