@@ -21,18 +21,24 @@ const $closeBtn = document.getElementById("close-btn") as HTMLButtonElement;
 
 // ─── Block all keyboard shortcuts ───────────────────────────
 
+let isStrictMode = true;
+
 document.addEventListener(
   "keydown",
   (e: KeyboardEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    return false;
+    if (isStrictMode) {
+      e.preventDefault();
+      e.stopPropagation();
+      return false;
+    }
   },
   true,
 );
 
 document.addEventListener("contextmenu", (e) => {
-  e.preventDefault();
+  if (isStrictMode) {
+    e.preventDefault();
+  }
 });
 
 // ─── Countdown Logic ────────────────────────────────────────
@@ -91,11 +97,24 @@ $addTimeBtn.addEventListener("click", async () => {
   }
 });
 
-// Show the Close button after the original 20 seconds have elapsed
-setTimeout(() => {
-  $closeBtn.style.display = "inline-block";
-  $closeBtn.classList.add("fade-in");
-}, 20000);
+// Fetch settings to determine when to show the close button
+async function initOverlay() {
+  try {
+    isStrictMode = await invoke<boolean>("get_strict_mode");
+    if (!isStrictMode) {
+      $closeBtn.style.display = "inline-block";
+      $closeBtn.classList.add("fade-in");
+    } else {
+      setTimeout(() => {
+        $closeBtn.style.display = "inline-block";
+        $closeBtn.classList.add("fade-in");
+      }, 20000);
+    }
+  } catch (err) {
+    console.error("Failed to init strict mode:", err);
+  }
+}
+initOverlay();
 
 // Allow closing manually if the user clicked +20s by mistake
 $closeBtn.addEventListener("click", async () => {

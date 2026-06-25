@@ -19,6 +19,7 @@ const $iconPause = document.getElementById("icon-pause") as unknown as SVGElemen
 const $iconPlay = document.getElementById("icon-play") as unknown as SVGElement;
 const $btnReset = document.getElementById("btn-reset") as HTMLButtonElement;
 const $infoCountdown = document.getElementById("info-countdown") as HTMLElement;
+const $toggleStrictMode = document.getElementById("toggle-strict-mode") as HTMLInputElement;
 
 // ─── Rendering ──────────────────────────────────────────────
 
@@ -114,6 +115,23 @@ async function init() {
     const rem = await invoke<number>("get_remaining");
     updateUI(rem);
     setStatusUI(false);
+  });
+
+  // Settings
+  const isStrict = await invoke<boolean>("get_strict_mode");
+  $toggleStrictMode.checked = isStrict;
+  
+  $toggleStrictMode.addEventListener("change", async (e) => {
+    const target = e.target as HTMLInputElement;
+    try {
+      await invoke("set_strict_mode", { strictMode: target.checked });
+    } catch (err) {
+      console.error("Failed to set strict mode:", err);
+    }
+  });
+
+  await listen<boolean>("settings-changed", (event) => {
+    $toggleStrictMode.checked = event.payload;
   });
 
   // Also poll every second for UI smoothness

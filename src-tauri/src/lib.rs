@@ -11,6 +11,7 @@ use tauri::{
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use rodio::{source::SineWave, source::Source, DeviceSinkBuilder};
+use serde::{Deserialize, Serialize};
 
 /// Work interval in seconds (20 minutes for production).
 const WORK_INTERVAL_SECS: u64 = 20 * 60;
@@ -61,6 +62,43 @@ struct OverlayCloseAllowed(Arc<AtomicBool>);
 
 /// Shared state for tracking remaining seconds in the active break.
 struct BreakState(Arc<AtomicU64>);
+
+#[derive(Serialize, Deserialize, Clone)]
+struct AppSettings {
+    strict_mode: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self { strict_mode: true }
+    }
+}
+
+struct SettingsState(Mutex<AppSettings>);
+
+fn settings_path(app: &AppHandle) -> std::path::PathBuf {
+    app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("settings.json")
+}
+
+fn load_settings(app: &AppHandle) -> AppSettings {
+    let path = settings_path(app);
+    if let Ok(content) = std::fs::read_to_string(path) {
+        if let Ok(settings) = serde_json::from_str(&content) {
+            return settings;
+        }
+    }
+    AppSettings::default()
+}
+
+fn save_settings(app: &AppHandle, settings: &AppSettings) {
+    let path = settings_path(app);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(content) = serde_json::to_string_pretty(settings) {
+        let _ = std::fs::write(path, content);
+    }
+}
 
 // ─── Tauri Commands ─────────────────────────────────────────
 
@@ -142,6 +180,19 @@ fn add_break_time(state: tauri::State<'_, BreakState>) {
     state.0.fetch_add(20, Ordering::SeqCst);
 }
 
+#[tauri::command]
+fn get_strict_mode(state: tauri::State<'_, SettingsState>) -> bool {
+    state.0.lock().unwrap().strict_mode
+}
+
+#[tauri::command]
+fn set_strict_mode(app: AppHandle, state: tauri::State<'_, SettingsState>, strict_mode: bool) {
+    let mut s = state.0.lock().unwrap();
+    s.strict_mode = strict_mode;
+    save_settings(&app, &s);
+    let _ = app.emit("settings-changed", strict_mode);
+}
+
 /// Force a window to cover the entire primary monitor.
 fn force_fullscreen(app: &AppHandle, win: &tauri::WebviewWindow) {
     // Get monitor dimensions and size the window to fill the screen
@@ -158,9 +209,12 @@ fn force_fullscreen(app: &AppHandle, win: &tauri::WebviewWindow) {
 
 /// Build the overlay window with close-prevention.
 fn build_overlay_window(app: &AppHandle) {
+    let strict_mode = app.state::<SettingsState>().0.lock().unwrap().strict_mode;
     let close_allowed = app.state::<OverlayCloseAllowed>().0.clone();
-    // Reset flag: overlay is NOT allowed to close until break ends
-    close_allowed.store(false, Ordering::SeqCst);
+    
+    // Reset flag: if strict mode, overlay is NOT allowed to close until break ends.
+    // If flexible mode, it's allowed to close immediately.
+    close_allowed.store(!strict_mode, Ordering::SeqCst);
 
     // Get monitor dimensions for initial window size
     let (width, height) = if let Ok(Some(monitor)) = app.primary_monitor() {
@@ -258,12 +312,12 @@ fn start_background_timer(app: &AppHandle) {
                 // Tell the frontend the break has started
                 let _ = handle.emit("break-start", ());
 
-                // Open the overlay (close NOT allowed)
+                // Open the overlay
                 let h = handle.clone();
                 let _ = handle.run_on_main_thread(move || {
-                    // Reset the close flag
+                    let strict_mode = h.state::<SettingsState>().0.lock().unwrap().strict_mode;
                     let flag = h.state::<OverlayCloseAllowed>();
-                    flag.0.store(false, Ordering::SeqCst);
+                    flag.0.store(!strict_mode, Ordering::SeqCst);
 
                     if let Some(win) = h.get_webview_window("overlay") {
                         let _ = win.show();
@@ -368,12 +422,17 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .checked(is_autostart)
         .build(app)?;
         
+    let is_strict = load_settings(app).strict_mode;
+    let strict_mode_item = CheckMenuItemBuilder::with_id("strict_mode", "Strict Mode")
+        .checked(is_strict)
+        .build(app)?;
+        
     let pause_item = MenuItemBuilder::with_id("pause", "Pause").build(app)?;
     let reset_item = MenuItemBuilder::with_id("reset", "Reset Timer").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
     let menu = MenuBuilder::new(app)
-        .items(&[&show_item, &autostart_item, &pause_item, &reset_item, &quit_item])
+        .items(&[&show_item, &autostart_item, &strict_mode_item, &pause_item, &reset_item, &quit_item])
         .build()?;
 
     let icon = Image::from_path("icons/32x32.png")
@@ -400,6 +459,13 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                         let _ = autolaunch.enable();
                     }
                 }
+            }
+            "strict_mode" => {
+                let state = app_handle.state::<SettingsState>();
+                let mut settings = state.0.lock().unwrap();
+                settings.strict_mode = !settings.strict_mode;
+                save_settings(app_handle, &settings);
+                let _ = app_handle.emit("settings-changed", settings.strict_mode);
             }
             "pause" => {
                 app_handle.state::<Mutex<TimerState>>().lock().unwrap().toggle_pause();
@@ -438,9 +504,14 @@ pub fn run() {
             open_overlay,
             close_overlay,
             add_break_time,
+            get_strict_mode,
+            set_strict_mode,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            let settings = load_settings(&handle);
+            app.manage(SettingsState(Mutex::new(settings)));
+            
             setup_tray(&handle)?;
             start_background_timer(&handle);
             Ok(())
