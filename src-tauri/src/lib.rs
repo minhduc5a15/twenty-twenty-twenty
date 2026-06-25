@@ -166,12 +166,8 @@ fn close_overlay(app: AppHandle) {
         let _ = win.close();
     }
 
-    // Bring main window to the front
-    if let Some(main_win) = app.get_webview_window("main") {
-        let _ = main_win.show();
-        let _ = main_win.unminimize();
-        let _ = main_win.set_focus();
-    }
+    // We no longer bring the main window to the front automatically to avoid annoying the user.
+    // Let it stay silent or closed to save RAM.
 }
 
 /// Add 20 seconds to the currently running break.
@@ -393,12 +389,8 @@ fn start_background_timer(app: &AppHandle) {
                         let _ = win.close();
                     }
 
-                    // Bring main window to the front
-                    if let Some(main_win) = h2.get_webview_window("main") {
-                        let _ = main_win.show();
-                        let _ = main_win.unminimize();
-                        let _ = main_win.set_focus();
-                    }
+                    // Main window remains hidden/destroyed to save RAM.
+                    // User can manually show it via system tray.
                 });
 
                 let _ = handle.emit("break-end", ());
@@ -448,6 +440,18 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     let _ = win.show();
                     let _ = win.set_focus();
                     let _ = win.unminimize();
+                } else {
+                    // Window was destroyed to save RAM, dynamically rebuild it
+                    let _ = tauri::WebviewWindowBuilder::new(
+                        app_handle,
+                        "main",
+                        tauri::WebviewUrl::App("index.html".into()),
+                    )
+                    .title("20-20-20 Eye Rest")
+                    .inner_size(420.0, 560.0)
+                    .resizable(true)
+                    .center()
+                    .build();
                 }
             }
             "autostart" => {
@@ -516,6 +520,13 @@ pub fn run() {
             start_background_timer(&handle);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                // Prevent app from exiting when the main window is closed.
+                // The app will continue running in the system tray.
+                api.prevent_exit();
+            }
+        });
 }
