@@ -1,3 +1,5 @@
+use rodio::{source::SineWave, source::Source, DeviceSinkBuilder};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -5,13 +7,11 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
-    WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
+    WindowEvent,
 };
-use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
-use rodio::{source::SineWave, source::Source, DeviceSinkBuilder};
-use serde::{Deserialize, Serialize};
+use tauri_plugin_notification::NotificationExt;
 
 /// Work interval in seconds (20 minutes for production).
 const WORK_INTERVAL_SECS: u64 = 20 * 60;
@@ -77,7 +77,10 @@ impl Default for AppSettings {
 struct SettingsState(Mutex<AppSettings>);
 
 fn settings_path(app: &AppHandle) -> std::path::PathBuf {
-    app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("settings.json")
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join("settings.json")
 }
 
 fn load_settings(app: &AppHandle) -> AppSettings {
@@ -207,7 +210,7 @@ fn force_fullscreen(app: &AppHandle, win: &tauri::WebviewWindow) {
 fn build_overlay_window(app: &AppHandle) {
     let strict_mode = app.state::<SettingsState>().0.lock().unwrap().strict_mode;
     let close_allowed = app.state::<OverlayCloseAllowed>().0.clone();
-    
+
     // Reset flag: if strict mode, overlay is NOT allowed to close until break ends.
     // If flexible mode, it's allowed to close immediately.
     close_allowed.store(!strict_mode, Ordering::SeqCst);
@@ -220,21 +223,17 @@ fn build_overlay_window(app: &AppHandle) {
         (1920, 1080) // fallback
     };
 
-    let builder = WebviewWindowBuilder::new(
-        app,
-        "overlay",
-        WebviewUrl::App("overlay.html".into()),
-    )
-    .title("Break Time!")
-    .inner_size(width as f64, height as f64)
-    .position(0.0, 0.0)
-    .decorations(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .minimizable(false)
-    .closable(false)
-    .focused(true);
+    let builder = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("overlay.html".into()))
+        .title("Break Time!")
+        .inner_size(width as f64, height as f64)
+        .position(0.0, 0.0)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .minimizable(false)
+        .closable(false)
+        .focused(true);
 
     if let Ok(win) = builder.build() {
         // Force fullscreen after build (more reliable on Linux)
@@ -342,13 +341,18 @@ fn start_background_timer(app: &AppHandle) {
                 // We use BreakState so that the frontend can dynamically add time.
                 loop {
                     let b = handle.state::<BreakState>();
-                    
+
                     let mut current = b.0.load(Ordering::SeqCst);
                     let rem = loop {
                         if current == 0 {
                             break 0;
                         }
-                        match b.0.compare_exchange_weak(current, current - 1, Ordering::SeqCst, Ordering::Relaxed) {
+                        match b.0.compare_exchange_weak(
+                            current,
+                            current - 1,
+                            Ordering::SeqCst,
+                            Ordering::Relaxed,
+                        ) {
                             Ok(_) => break current - 1,
                             Err(x) => current = x,
                         }
@@ -357,7 +361,7 @@ fn start_background_timer(app: &AppHandle) {
                     if current == 0 {
                         break;
                     }
-                    
+
                     let _ = handle.emit("break-tick", rem);
 
                     // Play tick sound when 5s or less remain
@@ -369,7 +373,7 @@ fn start_background_timer(app: &AppHandle) {
                             sink.mixer().add(source);
                         }
                     }
-                    
+
                     std::thread::sleep(Duration::from_secs(1));
                 }
 
@@ -402,29 +406,58 @@ fn start_background_timer(app: &AppHandle) {
     });
 }
 
+// ─── Window Management ──────────────────────────────────────
+
+fn show_main_window(app_handle: &AppHandle) {
+    if let Some(win) = app_handle.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        let _ = win.unminimize();
+    } else {
+        // Window was destroyed to save RAM, dynamically rebuild it
+        let _ = tauri::WebviewWindowBuilder::new(
+            app_handle,
+            "main",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("20-20-20 Eye Rest")
+        .inner_size(420.0, 560.0)
+        .resizable(true)
+        .center()
+        .build();
+    }
+}
+
 // ─── Tray Icon ──────────────────────────────────────────────
 
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::CheckMenuItemBuilder;
-    
+
     let show_item = MenuItemBuilder::with_id("show", "Show Window").build(app)?;
-    
+
     let is_autostart = app.autolaunch().is_enabled().unwrap_or(false);
     let autostart_item = CheckMenuItemBuilder::with_id("autostart", "Start on Boot")
         .checked(is_autostart)
         .build(app)?;
-        
+
     let is_strict = load_settings(app).strict_mode;
     let strict_mode_item = CheckMenuItemBuilder::with_id("strict_mode", "Strict Mode")
         .checked(is_strict)
         .build(app)?;
-        
+
     let pause_item = MenuItemBuilder::with_id("pause", "Pause").build(app)?;
     let reset_item = MenuItemBuilder::with_id("reset", "Reset Timer").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
     let menu = MenuBuilder::new(app)
-        .items(&[&show_item, &autostart_item, &strict_mode_item, &pause_item, &reset_item, &quit_item])
+        .items(&[
+            &show_item,
+            &autostart_item,
+            &strict_mode_item,
+            &pause_item,
+            &reset_item,
+            &quit_item,
+        ])
         .build()?;
 
     let icon = Image::from_path("icons/32x32.png")
@@ -436,23 +469,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .tooltip("20-20-20 Eye Rest")
         .on_menu_event(move |app_handle, event| match event.id().as_ref() {
             "show" => {
-                if let Some(win) = app_handle.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                    let _ = win.unminimize();
-                } else {
-                    // Window was destroyed to save RAM, dynamically rebuild it
-                    let _ = tauri::WebviewWindowBuilder::new(
-                        app_handle,
-                        "main",
-                        tauri::WebviewUrl::App("index.html".into()),
-                    )
-                    .title("20-20-20 Eye Rest")
-                    .inner_size(420.0, 560.0)
-                    .resizable(true)
-                    .center()
-                    .build();
-                }
+                show_main_window(app_handle);
             }
             "autostart" => {
                 let autolaunch = app_handle.autolaunch();
@@ -472,11 +489,19 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                 let _ = app_handle.emit("settings-changed", settings.strict_mode);
             }
             "pause" => {
-                app_handle.state::<Mutex<TimerState>>().lock().unwrap().toggle_pause();
+                app_handle
+                    .state::<Mutex<TimerState>>()
+                    .lock()
+                    .unwrap()
+                    .toggle_pause();
                 let _ = app_handle.emit("timer-tick", ());
             }
             "reset" => {
-                app_handle.state::<Mutex<TimerState>>().lock().unwrap().reset();
+                app_handle
+                    .state::<Mutex<TimerState>>()
+                    .lock()
+                    .unwrap()
+                    .reset();
                 let _ = app_handle.emit("timer-tick", ());
             }
             "quit" => {
@@ -494,7 +519,13 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![])))
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![]),
+        ))
         .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(TimerState::default()))
         .manage(OverlayCloseAllowed(Arc::new(AtomicBool::new(true))))
@@ -515,7 +546,7 @@ pub fn run() {
             let handle = app.handle().clone();
             let settings = load_settings(&handle);
             app.manage(SettingsState(Mutex::new(settings)));
-            
+
             setup_tray(&handle)?;
             start_background_timer(&handle);
             Ok(())
