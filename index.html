@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="20-20-20 Eye Rest Reminder — Protect your eyes with regular breaks every 20 minutes" />
+    <title>20-20-20 Eye Rest</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <div id="app" class="app">
+      <!-- Animated background orbs -->
+      <div class="bg-orbs" aria-hidden="true">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+      </div>
+
+      <!-- Header -->
+      <header class="header">
+        <div class="header-icon">
+          <img src="/src/assets/icon.png" width="40" height="40" alt="App Icon" style="border-radius: 50%;" />
+        </div>
+        <h1 class="header-title">20-20-20</h1>
+        <p class="header-subtitle">Eye Rest Reminder</p>
+      </header>
+
+      <!-- Timer Display -->
+      <main class="timer-section">
+        <div class="timer-ring">
+          <svg class="timer-svg" viewBox="0 0 200 200">
+            <circle class="timer-track" cx="100" cy="100" r="88" />
+            <circle id="timer-progress" class="timer-progress" cx="100" cy="100" r="88" />
+          </svg>
+          <div class="timer-display">
+            <span id="timer-minutes" class="timer-digits">20</span>
+            <span class="timer-colon">:</span>
+            <span id="timer-seconds" class="timer-digits">00</span>
+          </div>
+        </div>
+
+        <!-- Status -->
+        <div id="status-badge" class="status-badge status-running">
+          <span class="status-dot"></span>
+          <span id="status-text" class="status-text">Running</span>
+        </div>
+      </main>
+
+      <!-- Controls -->
+      <footer class="controls">
+        <button id="btn-pause" class="btn btn-primary" type="button">
+          <svg id="icon-pause" class="btn-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="4" width="4" height="16" rx="1"/>
+            <rect x="14" y="4" width="4" height="16" rx="1"/>
+          </svg>
+          <svg id="icon-play" class="btn-icon hidden" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5,3 19,12 5,21"/>
+          </svg>
+          <span id="btn-pause-text">Pause</span>
+        </button>
+        <button id="btn-reset" class="btn btn-secondary" type="button">
+          <svg class="btn-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+          <span>Reset</span>
+        </button>
+      </footer>
+
+      <!-- Info bar -->
+      <div class="info-bar">
+        <span class="info-text">
+          Next break in <strong id="info-countdown">00:30</strong>
+        </span>
+      </div>
+    </div>
+  </body>
+</html>

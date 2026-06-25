@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Break Time!</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/overlay.css" />
+    <script type="module" src="/src/overlay.ts"></script>
+  </head>
+  <body>
+    <div id="overlay-app" class="overlay">
+      <!-- Pulsing background rings -->
+      <div class="pulse-rings" aria-hidden="true">
+        <div class="pulse-ring pulse-ring-1"></div>
+        <div class="pulse-ring pulse-ring-2"></div>
+        <div class="pulse-ring pulse-ring-3"></div>
+      </div>
+
+      <!-- Eye icon -->
+      <div class="overlay-icon">
+        <img src="/src/assets/icon.png" width="112" height="112" alt="App Icon" style="border-radius: 50%; box-shadow: 0 8px 32px rgba(0,0,0,0.5);" />
+      </div>
+
+      <!-- Title -->
+      <h1 class="overlay-title">Time for a Break!</h1>
+      <p class="overlay-subtitle">Look at something 20 feet (6 meters) away for 20 seconds</p>
+
+      <!-- Break Countdown -->
+      <div class="break-timer">
+        <div class="break-ring">
+          <svg class="break-svg" viewBox="0 0 160 160">
+            <circle class="break-track" cx="80" cy="80" r="70" />
+            <circle id="break-progress" class="break-progress" cx="80" cy="80" r="70" />
+          </svg>
+          <span id="break-seconds" class="break-digits">20</span>
+        </div>
+      </div>
+
+      <p class="overlay-hint">seconds remaining</p>
+    </div>
+  </body>
+</html>
