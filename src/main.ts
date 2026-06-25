@@ -16,7 +16,6 @@ const CIRCUMFERENCE = 2 * Math.PI * 88; // matches SVG circle r=88
 
 const $minutes = document.getElementById("timer-minutes") as HTMLSpanElement;
 const $seconds = document.getElementById("timer-seconds") as HTMLSpanElement;
-const $timerSeconds = document.getElementById("timer-seconds") as HTMLSpanElement;
 const $statusBadge = document.getElementById("status-badge") as HTMLDivElement;
 const $statusText = document.getElementById("status-text") as HTMLSpanElement;
 const $btnPause = document.getElementById("btn-pause") as HTMLButtonElement;
