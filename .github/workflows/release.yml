@@ -62,6 +62,6 @@ jobs:
           tagName: v__VERSION__
           releaseName: "20-20-20 Eye Rest v__VERSION__"
           releaseBody: "Automated Release of Twenty-Twenty-Twenty Eye Rest"
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
