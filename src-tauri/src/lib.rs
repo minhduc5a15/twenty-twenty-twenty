@@ -1,7 +1,7 @@
 use rodio::{source::SineWave, source::Source, DeviceSinkBuilder};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock, Condvar};
 use std::time::{Duration, Instant};
 use tauri::{
     image::Image,
@@ -24,6 +24,11 @@ struct TimerState {
     /// Instant when the timer last ticked (used for accurate delta calculation).
     last_tick: Instant,
     total_work_secs: u64,
+}
+
+struct TimerShared {
+    pub state: Mutex<TimerState>,
+    pub cv: Condvar,
 }
 
 impl TimerState {
@@ -80,7 +85,7 @@ impl Default for AppSettings {
     }
 }
 
-struct SettingsState(Mutex<AppSettings>);
+struct SettingsState { pub data: RwLock<AppSettings> }
 
 fn settings_path(app: &AppHandle) -> std::path::PathBuf {
     app.path()
@@ -117,38 +122,41 @@ fn save_settings(app: &AppHandle, settings: &AppSettings) {
 
 /// Return the current remaining seconds on the work timer.
 #[tauri::command]
-fn get_remaining(state: tauri::State<'_, Mutex<TimerState>>) -> u64 {
-    let s = state.lock().unwrap();
+fn get_remaining(state: tauri::State<'_, TimerShared>) -> u64 {
+    let s = state.state.lock().unwrap();
     s.remaining_secs
 }
 
 /// Return whether the timer is currently paused.
 #[tauri::command]
-fn is_paused(state: tauri::State<'_, Mutex<TimerState>>) -> bool {
-    let s = state.lock().unwrap();
+fn is_paused(state: tauri::State<'_, TimerShared>) -> bool {
+    let s = state.state.lock().unwrap();
     s.paused
 }
 
 /// Toggle pause / resume. Returns the new paused state.
 #[tauri::command]
-fn toggle_pause(state: tauri::State<'_, Mutex<TimerState>>) -> bool {
-    state.lock().unwrap().toggle_pause()
+fn toggle_pause(state: tauri::State<'_, TimerShared>) -> bool {
+    let res = state.state.lock().unwrap().toggle_pause();
+    state.cv.notify_one();
+    res
 }
 
 /// Reset the timer back to the work interval and unpause.
 #[tauri::command]
 fn reset_timer(
-    state: tauri::State<'_, Mutex<TimerState>>,
+    state: tauri::State<'_, TimerShared>,
     settings_state: tauri::State<'_, SettingsState>,
 ) {
-    let settings = settings_state.0.lock().unwrap().clone();
-    state.lock().unwrap().reset(settings.work_duration_secs);
+    let settings = settings_state.data.read().unwrap().clone();
+    state.state.lock().unwrap().reset(settings.work_duration_secs);
+    state.cv.notify_one();
 }
 
 /// Send the system notification for the break.
 #[tauri::command]
 fn send_break_notification(app: AppHandle) {
-    let break_secs = app.state::<SettingsState>().0.lock().unwrap().break_duration_secs;
+    let break_secs = app.state::<SettingsState>().data.read().unwrap().break_duration_secs;
     let _ = app
         .notification()
         .builder()
@@ -196,19 +204,19 @@ fn add_break_time(state: tauri::State<'_, BreakState>) {
 
 #[tauri::command]
 fn get_settings(state: tauri::State<'_, SettingsState>) -> AppSettings {
-    state.0.lock().unwrap().clone()
+    state.data.read().unwrap().clone()
 }
 
 #[tauri::command]
 fn update_settings(
     app: AppHandle,
     state: tauri::State<'_, SettingsState>,
-    timer_state: tauri::State<'_, Mutex<TimerState>>,
+    timer_state: tauri::State<'_, TimerShared>,
     settings: AppSettings,
 ) {
     let mut should_reset = false;
     {
-        let mut s = state.0.lock().unwrap();
+        let mut s = state.data.write().unwrap();
         if s.work_duration_secs != settings.work_duration_secs {
             should_reset = true;
         }
@@ -217,7 +225,8 @@ fn update_settings(
     }
     
     if should_reset {
-        timer_state.lock().unwrap().reset(settings.work_duration_secs);
+        timer_state.state.lock().unwrap().reset(settings.work_duration_secs);
+        timer_state.cv.notify_one();
     }
     
     let _ = app.emit("settings-changed", settings.clone());
@@ -241,7 +250,7 @@ fn force_fullscreen(_app: &AppHandle, win: &tauri::WebviewWindow) {
 
 /// Build the overlay window with close-prevention.
 fn build_overlay_window(app: &AppHandle) {
-    let strict_mode = app.state::<SettingsState>().0.lock().unwrap().strict_mode;
+    let strict_mode = app.state::<SettingsState>().data.read().unwrap().strict_mode;
     let close_allowed = app.state::<OverlayCloseAllowed>().0.clone();
 
     // Reset flag: if strict mode, overlay is NOT allowed to close until break ends.
@@ -301,14 +310,23 @@ fn build_overlay_window(app: &AppHandle) {
 fn start_background_timer(app: &AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
+        let shared = handle.state::<TimerShared>();
         loop {
-            std::thread::sleep(Duration::from_secs(1));
-
             let should_break = {
-                let state = handle.state::<Mutex<TimerState>>();
-                let mut s = state.lock().unwrap();
+                let mut s = shared.state.lock().unwrap();
 
-                if !s.running || s.paused {
+                while s.paused {
+                    s = shared.cv.wait(s).unwrap();
+                }
+
+                if !s.running {
+                    break;
+                }
+
+                let (new_s, _res) = shared.cv.wait_timeout(s, Duration::from_secs(1)).unwrap();
+                s = new_s;
+
+                if s.paused || !s.running {
                     continue;
                 }
 
@@ -316,7 +334,6 @@ fn start_background_timer(app: &AppHandle) {
                 let mut elapsed = now.duration_since(s.last_tick).as_secs();
                 s.last_tick = now;
 
-                // Handle system sleep: if elapsed time is huge, cap it to 1 second
                 if elapsed > 10 {
                     elapsed = 1;
                 }
@@ -330,12 +347,13 @@ fn start_background_timer(app: &AppHandle) {
                 }
             };
 
-            // Emit tick to frontend
-            let _ = handle.emit("timer-tick", ());
+            if !handle.webview_windows().is_empty() {
+                let _ = handle.emit("timer-tick", ());
+            }
 
             if should_break {
                 // Get break duration
-                let break_secs = handle.state::<SettingsState>().0.lock().unwrap().break_duration_secs;
+                let break_secs = handle.state::<SettingsState>().data.read().unwrap().break_duration_secs;
                 
                 // Fire notification
                 let _ = handle
@@ -351,7 +369,7 @@ fn start_background_timer(app: &AppHandle) {
                 // Open the overlay
                 let h = handle.clone();
                 let _ = handle.run_on_main_thread(move || {
-                    let strict_mode = h.state::<SettingsState>().0.lock().unwrap().strict_mode;
+                    let strict_mode = h.state::<SettingsState>().data.read().unwrap().strict_mode;
                     let flag = h.state::<OverlayCloseAllowed>();
                     flag.0.store(!strict_mode, Ordering::SeqCst);
 
@@ -366,7 +384,7 @@ fn start_background_timer(app: &AppHandle) {
                 // Reset the break timer to 20 seconds initially
                 {
                     let b = handle.state::<BreakState>();
-                    let break_duration = handle.state::<SettingsState>().0.lock().unwrap().break_duration_secs;
+                    let break_duration = handle.state::<SettingsState>().data.read().unwrap().break_duration_secs;
                     b.0.store(break_duration, Ordering::SeqCst);
                 }
 
@@ -442,8 +460,12 @@ fn start_background_timer(app: &AppHandle) {
                 let _ = handle.emit("break-end", ());
 
                 // Reset the work timer (the MutexGuard is dropped immediately after this line)
-                let total = handle.state::<SettingsState>().0.lock().unwrap().work_duration_secs;
-                handle.state::<Mutex<TimerState>>().lock().unwrap().reset(total);
+                let total = handle.state::<SettingsState>().data.read().unwrap().work_duration_secs;
+                {
+                    let ts = handle.state::<TimerShared>();
+                    ts.state.lock().unwrap().reset(total);
+                    ts.cv.notify_one();
+                }
             }
         }
     });
@@ -526,10 +548,10 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             }
             "strict_mode" => {
                 let state = app_handle.state::<SettingsState>();
-                let mut settings = state.0.lock().unwrap().clone();
+                let mut settings = state.data.read().unwrap().clone();
                 settings.strict_mode = !settings.strict_mode;
                 {
-                    *state.0.lock().unwrap() = settings.clone();
+                    *state.data.write().unwrap() = settings.clone();
                 }
                 save_settings(app_handle, &settings);
                 let _ = app_handle.emit("settings-changed", settings);
@@ -543,12 +565,12 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                 let _ = app_handle.emit("timer-tick", ());
             }
             "reset" => {
-                let total = app_handle.state::<SettingsState>().0.lock().unwrap().work_duration_secs;
-                app_handle
-                    .state::<Mutex<TimerState>>()
-                    .lock()
-                    .unwrap()
-                    .reset(total);
+                let total = app_handle.state::<SettingsState>().data.read().unwrap().work_duration_secs;
+                {
+                    let ts = app_handle.state::<TimerShared>();
+                    ts.state.lock().unwrap().reset(total);
+                    ts.cv.notify_one();
+                }
                 let _ = app_handle.emit("timer-tick", ());
             }
             "quit" => {
@@ -593,8 +615,11 @@ pub fn run() {
             let handle = app.handle().clone();
             let settings = load_settings(&handle);
             let total_work = settings.work_duration_secs;
-            app.manage(SettingsState(Mutex::new(settings)));
-            app.manage(Mutex::new(TimerState::new(total_work)));
+            app.manage(SettingsState { data: RwLock::new(settings) });
+            app.manage(TimerShared {
+                state: Mutex::new(TimerState::new(total_work)),
+                cv: Condvar::new(),
+            });
 
             setup_tray(&handle)?;
             start_background_timer(&handle);
