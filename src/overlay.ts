@@ -110,15 +110,11 @@ async function initOverlay() {
     $subtitle.textContent = `Look at something 20 feet (6 meters) away for ${settings.break_duration_secs} seconds`;
     updateBreakUI();
 
-    if (!settings.strict_mode) {
+    const delay = settings.strict_mode ? settings.break_duration_secs * 1000 : 0;
+    setTimeout(() => {
       $closeBtn.style.display = "inline-block";
       $closeBtn.classList.add("fade-in");
-    } else {
-      setTimeout(() => {
-        $closeBtn.style.display = "inline-block";
-        $closeBtn.classList.add("fade-in");
-      }, settings.break_duration_secs * 1000);
-    }
+    }, delay);
   } catch (err) {
     console.error("Failed to init overlay settings:", err);
   }

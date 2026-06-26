@@ -402,25 +402,10 @@ fn start_background_timer(app: &AppHandle) {
                 loop {
                     let b = handle.state::<BreakState>();
 
-                    let mut current = b.0.load(Ordering::SeqCst);
-                    let rem = loop {
-                        if current == 0 {
-                            break 0;
-                        }
-                        match b.0.compare_exchange_weak(
-                            current,
-                            current - 1,
-                            Ordering::SeqCst,
-                            Ordering::Relaxed,
-                        ) {
-                            Ok(_) => break current - 1,
-                            Err(x) => current = x,
-                        }
+                    let rem = match b.0.fetch_update(Ordering::SeqCst, Ordering::Relaxed, |x| x.checked_sub(1)) {
+                        Ok(old) => old - 1,
+                        Err(_) => break,
                     };
-
-                    if current == 0 {
-                        break;
-                    }
 
                     let _ = handle.emit("break-tick", rem);
 

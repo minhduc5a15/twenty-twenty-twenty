@@ -141,15 +141,9 @@ async function init() {
   $mainTitle.textContent = `${currentSettings.work_duration_secs / 60}-20-${currentSettings.break_duration_secs}`;
   
   const updateStrictIndicator = (isStrict: boolean) => {
-    if (isStrict) {
-      $strictBadge.classList.remove("status-strict-off");
-      $strictBadge.classList.add("status-strict-on");
-      $strictIndicator.textContent = "Strict: ON";
-    } else {
-      $strictBadge.classList.remove("status-strict-on");
-      $strictBadge.classList.add("status-strict-off");
-      $strictIndicator.textContent = "Strict: OFF";
-    }
+    $strictBadge.classList.toggle("status-strict-on", isStrict);
+    $strictBadge.classList.toggle("status-strict-off", !isStrict);
+    $strictIndicator.textContent = `Strict: ${isStrict ? "ON" : "OFF"}`;
   };
   
   updateStrictIndicator(currentSettings.strict_mode);
