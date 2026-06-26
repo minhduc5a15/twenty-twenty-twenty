@@ -557,11 +557,9 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                 let _ = app_handle.emit("settings-changed", settings);
             }
             "pause" => {
-                app_handle
-                    .state::<Mutex<TimerState>>()
-                    .lock()
-                    .unwrap()
-                    .toggle_pause();
+                let ts = app_handle.state::<TimerShared>();
+                ts.state.lock().unwrap().toggle_pause();
+                ts.cv.notify_one();
                 let _ = app_handle.emit("timer-tick", ());
             }
             "reset" => {
