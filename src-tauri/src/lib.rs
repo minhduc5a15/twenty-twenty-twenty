@@ -31,6 +31,8 @@ struct TimerShared {
     pub cv: Condvar,
 }
 
+struct TrayPauseItem(tauri::menu::CheckMenuItem<tauri::Wry>);
+
 impl TimerState {
     fn new(total_work_secs: u64) -> Self {
         Self {
@@ -136,21 +138,31 @@ fn is_paused(state: tauri::State<'_, TimerShared>) -> bool {
 
 /// Toggle pause / resume. Returns the new paused state.
 #[tauri::command]
-fn toggle_pause(state: tauri::State<'_, TimerShared>) -> bool {
+fn toggle_pause(app_handle: tauri::AppHandle, state: tauri::State<'_, TimerShared>) -> bool {
     let res = state.state.lock().unwrap().toggle_pause();
     state.cv.notify_one();
+
+    if let Some(item) = app_handle.try_state::<TrayPauseItem>() {
+        let _ = item.0.set_checked(res);
+    }
+
     res
 }
 
 /// Reset the timer back to the work interval and unpause.
 #[tauri::command]
 fn reset_timer(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, TimerShared>,
     settings_state: tauri::State<'_, SettingsState>,
 ) {
     let settings = settings_state.data.read().unwrap().clone();
     state.state.lock().unwrap().reset(settings.work_duration_secs);
     state.cv.notify_one();
+
+    if let Some(item) = app_handle.try_state::<TrayPauseItem>() {
+        let _ = item.0.set_checked(false);
+    }
 }
 
 /// Send the system notification for the break.
@@ -312,7 +324,7 @@ fn start_background_timer(app: &AppHandle) {
     std::thread::spawn(move || {
         let shared = handle.state::<TimerShared>();
         loop {
-            let should_break = {
+            let (should_break, should_warn) = {
                 let mut s = shared.state.lock().unwrap();
 
                 while s.paused {
@@ -338,17 +350,32 @@ fn start_background_timer(app: &AppHandle) {
                     elapsed = 1;
                 }
 
-                if elapsed >= s.remaining_secs {
+                let old_rem = s.remaining_secs;
+
+                let should_break = if elapsed >= s.remaining_secs {
                     s.remaining_secs = 0;
                     true
                 } else {
                     s.remaining_secs -= elapsed;
                     false
-                }
+                };
+
+                let should_warn = old_rem > 5 && s.remaining_secs <= 5;
+
+                (should_break, should_warn)
             };
 
             if !handle.webview_windows().is_empty() {
                 let _ = handle.emit("timer-tick", ());
+            }
+
+            if should_warn {
+                let _ = handle
+                    .notification()
+                    .builder()
+                    .title("Time for a break soon!")
+                    .body("The screen will lock in 5 seconds...")
+                    .show();
             }
 
             if should_break {
@@ -495,7 +522,11 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .checked(is_strict)
         .build(app)?;
 
-    let pause_item = MenuItemBuilder::with_id("pause", "Pause").build(app)?;
+    let is_paused = app.state::<TimerShared>().state.lock().unwrap().paused;
+    let pause_item = tauri::menu::CheckMenuItemBuilder::with_id("pause", "Pause")
+        .checked(is_paused)
+        .build(app)?;
+    app.manage(TrayPauseItem(pause_item.clone()));
     let reset_item = MenuItemBuilder::with_id("reset", "Reset Timer").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
@@ -513,7 +544,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let icon = Image::from_path("icons/32x32.png")
         .unwrap_or_else(|_| Image::from_bytes(include_bytes!("../icons/32x32.png")).unwrap());
 
-    let _tray = TrayIconBuilder::new()
+    let _tray = TrayIconBuilder::with_id("main_tray")
         .icon(icon)
         .menu(&menu)
         .tooltip("Twenty Twenty Twenty")
@@ -543,8 +574,13 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             }
             "pause" => {
                 let ts = app_handle.state::<TimerShared>();
-                ts.state.lock().unwrap().toggle_pause();
+                let paused = ts.state.lock().unwrap().toggle_pause();
                 ts.cv.notify_one();
+
+                if let Some(item) = app_handle.try_state::<TrayPauseItem>() {
+                    let _ = item.0.set_checked(paused);
+                }
+
                 let _ = app_handle.emit("timer-tick", ());
             }
             "reset" => {
@@ -554,6 +590,11 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     ts.state.lock().unwrap().reset(total);
                     ts.cv.notify_one();
                 }
+
+                if let Some(item) = app_handle.try_state::<TrayPauseItem>() {
+                    let _ = item.0.set_checked(false);
+                }
+
                 let _ = app_handle.emit("timer-tick", ());
             }
             "quit" => {
