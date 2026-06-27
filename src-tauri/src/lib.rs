@@ -180,13 +180,18 @@ fn send_break_notification(app: AppHandle) {
 /// Open (or re-show) the fullscreen overlay break window.
 #[tauri::command]
 fn open_overlay(app: AppHandle) {
-    if let Some(win) = app.get_webview_window("overlay") {
-        let _ = win.show();
-        let _ = win.set_focus();
-        force_fullscreen(&app, &win);
-        return;
+    let mut found_any = false;
+    for (label, win) in app.webview_windows() {
+        if label.starts_with("overlay_") {
+            let _ = win.show();
+            let _ = win.set_focus();
+            force_fullscreen(&app, &win);
+            found_any = true;
+        }
     }
-    build_overlay_window(&app);
+    if !found_any {
+        build_overlay_window(&app);
+    }
 }
 
 /// Close the overlay window (only called by the backend timer or frontend manual close).
@@ -200,8 +205,10 @@ fn close_overlay(app: AppHandle) {
     let b = app.state::<BreakState>();
     b.0.store(0, Ordering::SeqCst);
 
-    if let Some(win) = app.get_webview_window("overlay") {
-        let _ = win.close();
+    for (label, win) in app.webview_windows() {
+        if label.starts_with("overlay_") {
+            let _ = win.close();
+        }
     }
 
     // We no longer bring the main window to the front automatically to avoid annoying the user.
@@ -249,8 +256,8 @@ fn update_settings(
 }
 
 #[tauri::command]
-fn quit_app(_app: AppHandle) {
-    std::process::exit(0);
+fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 /// Force a window to cover the entire primary monitor.
@@ -269,52 +276,71 @@ fn build_overlay_window(app: &AppHandle) {
     // If flexible mode, it's allowed to close immediately.
     close_allowed.store(!strict_mode, Ordering::SeqCst);
 
-    // Get monitor dimensions for initial window size
-    let (width, height) = if let Ok(Some(monitor)) = app.primary_monitor() {
-        let size = monitor.size();
-        (size.width, size.height)
-    } else {
-        (1920, 1080) // fallback
-    };
+    let monitors = app.available_monitors().unwrap_or_default();
+    
+    if monitors.is_empty() {
+        // Fallback if no monitors detected
+        let builder = WebviewWindowBuilder::new(app, "overlay_0", WebviewUrl::App("overlay.html".into()))
+            .title("Break Time!")
+            .inner_size(1920.0, 1080.0)
+            .position(0.0, 0.0)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .minimizable(false)
+            .closable(false)
+            .focused(true);
 
-    let builder = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("overlay.html".into()))
-        .title("Break Time!")
-        .inner_size(width as f64, height as f64)
-        .position(0.0, 0.0)
-        .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .minimizable(false)
-        .closable(false)
-        .focused(true);
-
-    if let Ok(win) = builder.build() {
-        // Force fullscreen after build (more reliable on Linux)
-        let _ = win.set_fullscreen(true);
-
-        // Intercept ALL close requests (Alt+F4, WM close, etc.) and block them
-        // unless the backend has explicitly allowed it.
-        // Also intercept focus loss (e.g. from Super key) and force focus back!
-        let flag = close_allowed;
-        let win_clone = win.clone();
-        win.on_window_event(move |event| {
-            match event {
-                WindowEvent::CloseRequested { api, .. } => {
-                    if !flag.load(Ordering::SeqCst) {
-                        api.prevent_close();
-                    }
-                }
-                WindowEvent::Focused(focused) if !*focused && !flag.load(Ordering::SeqCst) => {
-                    // User tried to switch windows or pressed Super key.
-                    // Force focus back to the overlay!
-                    let _ = win_clone.set_focus();
-                    let _ = win_clone.set_always_on_top(true);
-                }
-                _ => {}
-            }
-        });
+        if let Ok(win) = builder.build() {
+            let _ = win.set_fullscreen(true);
+            setup_overlay_events(&win, close_allowed.clone());
+        }
+        return;
     }
+
+    for (i, monitor) in monitors.iter().enumerate() {
+        let label = format!("overlay_{}", i);
+        let scale = monitor.scale_factor();
+        let size = monitor.size().to_logical::<f64>(scale);
+        let pos = monitor.position().to_logical::<f64>(scale);
+
+        let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("overlay.html".into()))
+            .title("Break Time!")
+            .inner_size(size.width, size.height)
+            .position(pos.x, pos.y)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .minimizable(false)
+            .closable(false)
+            .focused(true);
+
+        if let Ok(win) = builder.build() {
+            let _ = win.set_fullscreen(true);
+            setup_overlay_events(&win, close_allowed.clone());
+        }
+    }
+}
+
+fn setup_overlay_events(win: &tauri::WebviewWindow, close_allowed: Arc<AtomicBool>) {
+    let flag = close_allowed;
+    let win_clone = win.clone();
+    win.on_window_event(move |event| {
+        match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                if !flag.load(Ordering::SeqCst) {
+                    api.prevent_close();
+                }
+            }
+            WindowEvent::Focused(focused) if !*focused && !flag.load(Ordering::SeqCst) => {
+                let _ = win_clone.set_focus();
+                let _ = win_clone.set_always_on_top(true);
+            }
+            _ => {}
+        }
+    });
 }
 
 // ─── Background Timer Thread ────────────────────────────────
@@ -400,10 +426,15 @@ fn start_background_timer(app: &AppHandle) {
                     let flag = h.state::<OverlayCloseAllowed>();
                     flag.0.store(!strict_mode, Ordering::SeqCst);
 
-                    if let Some(win) = h.get_webview_window("overlay") {
-                        let _ = win.show();
-                        force_fullscreen(&h, &win);
-                    } else {
+                    let mut found_any = false;
+                    for (label, win) in h.webview_windows() {
+                        if label.starts_with("overlay_") {
+                            let _ = win.show();
+                            force_fullscreen(&h, &win);
+                            found_any = true;
+                        }
+                    }
+                    if !found_any {
                         build_overlay_window(&h);
                     }
                 });
@@ -461,8 +492,10 @@ fn start_background_timer(app: &AppHandle) {
                     let flag = h2.state::<OverlayCloseAllowed>();
                     flag.0.store(true, Ordering::SeqCst);
 
-                    if let Some(win) = h2.get_webview_window("overlay") {
-                        let _ = win.close();
+                    for (label, win) in h2.webview_windows() {
+                        if label.starts_with("overlay_") {
+                            let _ = win.close();
+                        }
                     }
 
                     // Main window remains hidden/destroyed to save RAM.
@@ -598,7 +631,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                 let _ = app_handle.emit("timer-tick", ());
             }
             "quit" => {
-                std::process::exit(0);
+                app_handle.exit(0);
             }
             _ => {}
         })
