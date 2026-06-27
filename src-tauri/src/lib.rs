@@ -685,10 +685,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                // Prevent app from exiting when the main window is closed.
-                // The app will continue running in the system tray.
-                api.prevent_exit();
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                if code.is_none() {
+                    // Prevent app from exiting when the main window is closed.
+                    // The app will continue running in the system tray.
+                    api.prevent_exit();
+                }
             }
         });
 }
