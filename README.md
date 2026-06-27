@@ -2,6 +2,10 @@
 
 A lightweight desktop application that reminds you to rest your eyes following the **20-20-20 rule**: every 20 minutes, look at something 20 feet (6 meters) away for 20 seconds.
 
+<p align="center">
+  <img src="src/assets/app.png" alt="Twenty Twenty Twenty UI" width="360" />
+</p>
+
 ## Features
 - 🕒 **Customizable Intervals**: Adjust the work and break duration to fit your workflow.
 - 🚀 **Extremely Lightweight**: Built with Rust and Tauri, minimizing RAM and CPU usage by aggressively destroying background windows.
